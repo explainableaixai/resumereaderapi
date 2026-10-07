@@ -1,0 +1,18 @@
+{
+  "name": "resumereaderapi",
+  "version": "1.0.0",
+  "description": "Node.js client for the Resume Reader API: parse PDF, DOCX and scanned resumes into 114 structured JSON fields, and normalize job titles, skills and locations.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node -e \"const C=require('./');const c=new C('x');if(typeof c.parseText!=='function'||typeof c.normalizeSkills!=='function')process.exit(1);console.log('ok')\""
+  },
+  "keywords": ["resume parser", "cv parser", "resume parsing api", "resume to json", "ats", "recruiting", "hr tech", "job title normalization", "skill normalization", "location normalization", "ocr", "candidate data", "cv anonymization", "esco"],
+  "author": "Alpha Quantum <info@alpha-quantum.com>",
+  "license": "MIT",
+  "homepage": "https://www.resumereaderapi.com",
+  "repository": { "type": "git", "url": "https://github.com/explainableaixai/resumereaderapi" },
+  "bugs": { "url": "https://www.resumereaderapi.com" },
+  "engines": { "node": ">=14" }
+}
