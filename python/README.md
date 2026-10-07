@@ -121,6 +121,120 @@ def parse():
         os.unlink(tmp.name)
 ```
 
+<!--expanded-->
+## A Python workflow from folder to table
+
+Most people meet resume parsing as a pile of files in a folder. The job is to turn the pile into a table you can sort and join. Python is well suited to it because the pieces are standard: `pathlib` to find files, a thread pool to parallelize calls, and `pandas` to hold the result.
+
+Start by deciding the columns you care about. A recruiting database usually wants a name, a contact method, a location, a current title, a seniority level, years of experience and a list of skills. The parser returns far more than that, so write a small function that selects and flattens what you need, and keep the complete JSON next to it for later.
+
+```python
+from pathlib import Path
+import json
+import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
+from resumereaderapi import ResumeReader, ResumeReaderError
+
+rr = ResumeReader("YOUR_API_KEY")
+
+def row(path: Path):
+    try:
+        out = rr.parse_file(str(path))
+    except ResumeReaderError as exc:
+        return {"file": path.name, "error": exc.status}
+    r = out["resume"]
+    pos = r["career"]["current_position"] or {}
+    return {
+        "file": path.name,
+        "name": r["contact"]["full_name"],
+        "email": (r["contact"]["emails"] or [None])[0],
+        "city": r["contact"]["address"]["city"],
+        "title": pos.get("title"),
+        "seniority": r["career"]["seniority_level"],
+        "years": r["career"]["total_experience_years"],
+        "skills": "|".join(r["skills"]["technical"]),
+        "raw": json.dumps(r),
+    }
+
+files = sorted(Path("inbox").glob("*.pdf"))
+with ThreadPoolExecutor(max_workers=3) as pool:
+    table = pd.DataFrame(pool.map(row, files))
+table.to_parquet("candidates.parquet")
+```
+
+Three workers is deliberate. The service allows 30 requests per 60 seconds per IP, so a small pool with a pause is safer than a large one that triggers a 429.
+
+## Choosing options
+
+The options change the shape of what you get, so decide them once and write them down.
+
+- **`field_names="fr"`** renames the keys to French for teams that want French schemas. Values keep the language of the resume.
+- **`exclude_sensitive=True`** skips the nine sensitive fields completely.
+- **`anonymize=True`** replaces contact values and sensitive values with placeholders such as `[NAME]` and `[EMAIL]`.
+- **`sections=[...]`** limits extraction to the sections you list, which is useful when you only need contact details.
+- **`max_pages`** controls how many pages are processed.
+- **`language`** is a hint for non English documents.
+
+If you plan to compare candidates, anonymize the copy that reviewers see and keep the unmasked copy in a restricted store. That arrangement supports blind review without losing the ability to contact a shortlisted person.
+
+## Normalizing after the fact
+
+Parsing gives you the candidate's own words. Normalization gives you a common vocabulary. Run it on columns, not on single values, to keep the cost low and the batches full. Each item costs a tenth of a credit, and batches of up to 100 are handled in one call.
+
+```python
+titles = table["title"].dropna().unique().tolist()
+mapped = rr.normalize_titles(titles)["results"]
+lookup = {m["input"]: m for m in mapped}
+
+table["canonical_title"] = table["title"].map(lambda t: lookup.get(t, {}).get("normalized_title"))
+table["function"] = table["title"].map(lambda t: lookup.get(t, {}).get("job_function"))
+```
+
+The same pattern works for skills and locations. Deduplicate before sending. Ten thousand candidates may share only two thousand distinct job titles, and you pay for the distinct values only.
+
+The title normalizer returns a canonical title, a seniority level from intern through owner, and a job function such as engineering, sales or finance. The skill normalizer classifies each skill into one of fourteen types, and the location normalizer returns a city, a region, a country and an ISO country code, plus a metro area and a remote flag when they apply. The [skill normalization page](https://www.resumereaderapi.com/normalization/skills.php) shows the alias handling and the type list in detail.
+
+## Data quality checks
+
+Run a few checks after every batch. They take minutes to write and save hours later.
+
+1. The share of rows with an error status. A rise suggests a change in your inputs, such as a new scanner producing unreadable files.
+2. The share with an empty email. A jump suggests that contact blocks are not being found in a new template.
+3. The distribution of `seniority`. If it shifts sharply, look at the source of your files before you blame the parser.
+4. The number of duplicate emails. Duplicates are usually real people who applied twice, and they are a useful signal for deduplication.
+
+## Related reading
+
+Resume data often meets other datasets. A marketing team may want to understand where to advertise open roles, and the [guide to purchase intent segments](https://www.cookielessaudiences.com/features/purchase-intent-data.php) describes a coded, cookie free way to describe what the readers of a site are likely to want. A corporate development team that evaluates staffing businesses can read how to [map a whole thesis universe](https://www.acquisitionuniverse.com/use-cases/thesis-universe-mapping.php) for a vertical.
+
+<!--extra-->
+## A final practical tip
+
+Save the raw JSON of every parse next to your flattened table. Flattening is a decision, and decisions change. With the raw record, adding a new column is a re-read of stored data. Without it, adding a column means paying for the parse again.
+
+<!--further-->
+## Further reading and practical notes
+
+The [Python documentation](https://docs.python.org/3/) covers `concurrent.futures`, `pathlib` and `base64`, which the examples above use. For the legal side of handling candidate data in Europe, the [European Commission pages on data protection](https://commission.europa.eu/law/law-topic/data-protection_en) set out the principles that apply to a recruiting database: lawful basis, purpose limitation, minimisation and storage limits.
+
+Those principles translate into code in a few concrete ways. Store only the fields you need for the purpose you stated. Keep the original file and the parsed record under the same retention rule. Record when each record was created, so deletion jobs can find it. And make deletion real, which means removing the parsed JSON from every table and backup that holds it, not only from the main one.
+
+When you design the pipeline, think about the failure that hurts most. It is rarely a crash. It is a silent mismatch, for example a parser that returns the wrong person's email because a template put a reference's contact details at the top. Protect against it by sampling. Every week, pull twenty parsed records at random and read them next to their source files. Twenty records take half an hour, and they catch problems that metrics cannot see.
+
+## Frequently needed tweaks
+
+**I only need emails.** Use `sections=["contact"]` to limit extraction.
+
+**I need to re-parse with different options.** Keep the original files. Parsing is cheap compared with losing the source.
+
+**I need to prove what I stored.** Store the raw JSON and the date. Do not edit it in place.
+
+**I have a mix of languages.** Pass `language` when you know it. The parser also handles mixed content, but a hint helps.
+
+## Notes on reliability
+
+The published test suite for the service runs against the live endpoints before every release, including every documented error path, so the status codes in this README are the ones you will actually see. Treat them as part of the contract and write code against them.
+
 ## Questions
 
 **What file types?** PDF, DOCX, TXT, RTF, HTML, ODT, spreadsheets and images including scanned PDFs.

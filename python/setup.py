@@ -5,7 +5,7 @@ README = (pathlib.Path(__file__).parent / "README.md").read_text(encoding="utf-8
 
 setup(
     name="resumereaderapi",
-    version="1.0.0",
+    version="1.0.1",
     description="Python client for the Resume Reader API: parse PDF, DOCX and scanned resumes into 114 structured JSON fields, and normalize job titles, skills and locations.",
     long_description=README,
     long_description_content_type="text/markdown",

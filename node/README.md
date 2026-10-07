@@ -119,6 +119,97 @@ const ok = resume.career.total_experience_years >= 5
 
 Missing facts come back as `null` or `[]`, never invented, so checks like these stay honest.
 
+<!--expanded-->
+## What a parsed resume looks like
+
+The value of a resume parser is not that it reads a PDF. It is that every resume, whatever its layout, comes out as the same shape. The v2 schema has 114 fields, and every key is always present. When a document has no evidence for a field, the value is `null` for scalars and objects and `[]` for arrays. Nothing is invented. That rule is what lets you write queries against the result without a defensive check on every line.
+
+The record is organised into sections.
+
+- **contact**: name, email addresses, phone numbers, a structured address, profile links, driving licences, and a handful of identity fields that are treated as sensitive.
+- **profile**: summary, objective, desired role, availability, notice period, willingness to relocate or travel.
+- **career**: current position, total experience in years, management experience, a seniority level, a progression label, average tenure and a list of employment gaps.
+- **work_experience**: one entry per job with the title as written, a normalized title, company, industry, employment type, dates, duration in months, achievements and technologies.
+- **education**: degree, field, institution, years, grade.
+- **skills**: technical skills, tools, soft skills and a detailed list with years and level.
+- **esco**: a best effort alignment of the occupation and the skills to the European ESCO taxonomy, left null when uncertain.
+
+The computed career fields are worth a closer look. `average_tenure_months` and `employment_gaps` are not things a candidate writes down. They are derived from the dates, which means a recruiter can filter for stable careers or for recent gaps without reading a single document.
+
+## Files, pages and limits
+
+The service accepts more than eight kinds of input: PDF, DOCX, TXT, RTF, HTML, ODT, XLSX and XLS, plus images and scanned documents such as PNG, JPG and image only PDFs. Scans pass through character recognition automatically, so a photographed CV and a Word file arrive in the same shape.
+
+The limits are simple.
+
+| Limit | Value |
+|---|---|
+| File size | 10 MB |
+| Pages per document | 20 |
+| Size of one call | about 30,000 tokens |
+| Rate | 30 requests per 60 seconds per IP |
+
+One credit parses a resume of up to ten pages. A document of eleven to twenty pages costs two. A call that fails the caps or the credit check bills nothing. For ordinary resumes the number of credits equals the number of parsed resumes.
+
+## Designing a reliable upload flow
+
+A good upload flow assumes that some files will be bad. Put the checks in the right order.
+
+1. Check the extension and size in the browser before upload.
+2. Check them again on your server, because browsers can be bypassed.
+3. Call the parser with a timeout and a cancellation path.
+4. Map status codes to messages a candidate can act on. 422 means the file had no readable content, so ask for another format. 413 means the document is too long. 402 is your problem, not theirs, so alert your team and show a neutral message.
+5. Store the original file and the parsed JSON together, so you can re-parse later if you change options.
+
+Do not parse in the request that the candidate is waiting on if you can avoid it. Accept the upload, enqueue a job, and let the profile appear a few seconds later. Candidates forgive a short wait. They do not forgive an error page.
+
+## Using the output for ranking
+
+Parsed data supports fair, repeatable ranking. A few examples of filters you can write the day you have structured records:
+
+- senior or lead seniority with at least five years of experience
+- a named technology in the technical skills list
+- no employment gap longer than six months in the last five years
+- a location in a given country, using the address block
+- a degree level at or above a threshold, using the numeric education level
+
+Keep the filters visible. A hiring team should be able to see why a candidate was shortlisted. That visibility is easier when each rule reads a named field.
+
+## Privacy by design
+
+Nine fields carry special weight under data protection law, among them date of birth, gender, nationality, marital status, work permit and desired salary. They are extracted only when the document states them explicitly, never inferred from a name or a photo. Set `excludeSensitive` to skip them entirely, and set `anonymize` to replace identifiers with placeholders. Combined, the two options produce a record with no direct identifiers and no sensitive values.
+
+Documents are processed in memory for the duration of the request. They are not retained. If you store the parsed JSON yourself, you become responsible for that data, so apply your retention policy to it. The European Commission publishes guidance on data protection principles that is a good starting point for the policy side; the link is in the further reading section below.
+
+## How this fits with other data work
+
+Resume data rarely lives alone. Candidate locations, titles and skills feed dashboards that also include market data, and the same teams sometimes work with audience data for employer branding campaigns. The [audience demographics for websites](https://www.cookielessaudiences.com/features/website-audience-demographics.php) guide shows how a different service describes who reads a page, which is a useful reference when you plan where to advertise open roles.
+
+Corporate development teams that buy staffing and recruiting companies use a different kind of screening. The page on [acquisition sourcing for search funds](https://www.acquisitionuniverse.com/for/search-funds.php) explains how a buyer maps every independent company in a vertical, which is the same job a staffing investor faces when sizing an acquisition market.
+
+## Troubleshooting
+
+**Status 401 on every call.** The key is wrong. Copy it again from the dashboard and check for whitespace.
+
+**Status 429.** You exceeded 30 requests in 60 seconds from one IP. Slow down, or spread work across workers with a shared limiter.
+
+**Empty `skills` on a long document.** The document may have exceeded the page cap. Use `maxPages` to choose which pages count, or split the file.
+
+**Dates look odd.** Work history dates use `YYYY-MM`, and a current role has `end_date` of `present`.
+
+**Names appear as placeholders.** You set `anonymize`. Remove it if you need real values.
+
+**Text only files lose structure.** A plain text CV has fewer layout cues. Prefer the original PDF or DOCX when you have it.
+
+## Version notes
+
+Version 1.0.0 targets schema version 2 by default. The older compact schema is still available through the constructor option. The client has no runtime dependencies, so upgrading is a matter of changing one line in your manifest.
+
+<!--further-->
+## Further reading
+
+For the Node platform details the client relies on, the [Node.js documentation](https://nodejs.org/en) covers the HTTPS module and timeouts. For the occupation and skills framework behind the `esco` block of the response, the [European Skills, Competences, Qualifications and Occupations portal](https://esco.ec.europa.eu/en) explains the taxonomy and how its codes are structured.
+
 ## FAQ
 
 ### Is anything stored?
